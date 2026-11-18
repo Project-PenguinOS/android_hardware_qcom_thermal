@@ -114,7 +114,8 @@ impl Hal {
         }
         let mut callbacks = self.callbacks.lock().unwrap();
         for t in temperatures {
-            info!("sensor {} temperature {} severity {:?}", t.name, t.value, t.throttlingStatus);
+            let severity = format!("{:?}", t.throttlingStatus);
+            info!("sensor {} temperature {} severity {}", t.name, t.value, severity.trim_start_matches("r#"));
             callbacks.thermal.retain(|(callback, kind)| {
                 if *kind != TemperatureType::UNKNOWN && *kind != t.r#type {
                     return true;
@@ -170,6 +171,18 @@ impl Hal {
                     info!("Monitoring new thermal zone {zone} ({name})");
                 }
                 state.sensors.extend(found);
+            }
+            Event::CdevAdded { cdev } => {
+                // The modem cooling devices register ~20 s after boot, after the HAL started.
+                if state.cdevs.contains_key(&cdev) {
+                    return;
+                }
+                for (id, c) in zones::discover_cdevs() {
+                    if let std::collections::btree_map::Entry::Vacant(e) = state.cdevs.entry(id) {
+                        info!("New cooling device {id} ({})", c.device.name);
+                        e.insert(c);
+                    }
+                }
             }
             Event::CdevState { cdev, state: value } => {
                 let Some(c) = state.cdevs.get_mut(&cdev) else { return };

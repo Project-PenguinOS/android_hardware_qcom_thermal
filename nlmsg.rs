@@ -37,6 +37,7 @@ const SAMPLING_TEMP: u8 = 0;
 const EVENT_TZ_CREATE: u8 = 1;
 const EVENT_TZ_TRIP_UP: u8 = 5;
 const EVENT_TZ_TRIP_DOWN: u8 = 6;
+const EVENT_CDEV_ADD: u8 = 10;
 const EVENT_CDEV_STATE_UPDATE: u8 = 12;
 
 fn align(len: usize) -> usize {
@@ -144,6 +145,7 @@ pub enum Event {
     TripCrossed { zone: i32, trip: i32 },
     Sample { zone: i32, temperature: i64 },
     ZoneCreated { zone: i32, name: String },
+    CdevAdded { cdev: i32 },
     CdevState { cdev: i32, state: i64 },
 }
 
@@ -170,6 +172,7 @@ pub fn parse_events(buf: &[u8], family: u16) -> Vec<Event> {
                     zone: signed(ATTR_TZ_ID)?,
                     name: attr_string(&attrs, ATTR_TZ_NAME).unwrap_or_default(),
                 }),
+                EVENT_CDEV_ADD => Some(Event::CdevAdded { cdev: signed(ATTR_CDEV_ID)? }),
                 EVENT_CDEV_STATE_UPDATE => Some(Event::CdevState {
                     cdev: signed(ATTR_CDEV_ID)?,
                     state: u32_or(ATTR_CDEV_CUR_STATE, -1),
@@ -246,6 +249,7 @@ mod tests {
             nlmsg(31, EVENT_TZ_TRIP_UP, &[nla(ATTR_TZ_ID, &8u32.to_ne_bytes())]),
             nlmsg(30, EVENT_TZ_CREATE, &[nla(ATTR_TZ_ID, &9u32.to_ne_bytes()), nla(ATTR_TZ_NAME, b"skin\0")]),
             nlmsg(30, EVENT_CDEV_STATE_UPDATE, &[nla(ATTR_CDEV_ID, &3u32.to_ne_bytes()), nla(ATTR_CDEV_CUR_STATE, &2u32.to_ne_bytes())]),
+            nlmsg(30, EVENT_CDEV_ADD, &[nla(ATTR_CDEV_ID, &42u32.to_ne_bytes()), nla(18, b"modem_lte_dsc\0")]),
         ]
         .concat();
         assert_eq!(
@@ -255,6 +259,7 @@ mod tests {
                 Event::TripCrossed { zone: 7, trip: 1 },
                 Event::ZoneCreated { zone: 9, name: "skin".to_owned() },
                 Event::CdevState { cdev: 3, state: 2 },
+                Event::CdevAdded { cdev: 42 },
             ]
         );
     }
