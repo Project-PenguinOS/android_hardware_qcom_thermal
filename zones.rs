@@ -117,6 +117,23 @@ pub fn find_zone(name: &str) -> Option<i32> {
     match_zone(&entries("thermal_zone"), name)
 }
 
+/// The types of all thermal zones, in zone order.
+pub fn zone_types() -> Vec<String> {
+    entries("thermal_zone").into_iter().map(|(_, kind)| kind).collect()
+}
+
+/// The lowest critical trip of the zone of type `name`, in the zone's unit.
+pub fn critical_trip(name: &str) -> Option<i32> {
+    let tz = find_zone(name)?;
+    let path = format!("{THERMAL}/thermal_zone{tz}");
+    (0..=config::LIMIT_PROFILE_TRIP_MAX)
+        .map_while(|trip| Some((trip, read_trimmed(&format!("{path}/trip_point_{trip}_type"))?)))
+        .filter(|(_, kind)| kind == "critical")
+        .filter_map(|(trip, _)| read_int(&format!("{path}/trip_point_{trip}_temp")))
+        .filter_map(|temp| i32::try_from(temp).ok())
+        .min()
+}
+
 /// Thermal limits profile 1 has a 125 C hot trip on the AOSS zone.
 pub fn limit_profile() -> i32 {
     let Some(tz) = find_zone(config::LIMIT_PROFILE_ZONE) else {

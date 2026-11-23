@@ -9,6 +9,7 @@ rust_defaults {
         "liblibc",
         "liblog_rust",
         "liblogger",
+        "libserde_json",
     ],
 }
 

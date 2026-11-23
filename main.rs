@@ -15,6 +15,8 @@ mod config;
 mod netlink;
 mod nlmsg;
 mod severity;
+#[rustfmt::skip]
+mod tables;
 mod zones;
 
 use android_hardware_thermal::aidl::android::hardware::thermal::{
@@ -30,7 +32,7 @@ use android_hardware_thermal::aidl::android::hardware::thermal::{
 };
 use binder::{BinderFeatures, ExceptionCode, Interface, Status, Strong};
 use config::SensorConfig;
-use log::{error, info, LevelFilter};
+use log::{error, info, warn, LevelFilter};
 use nlmsg::Event;
 use std::collections::BTreeMap;
 use std::fs;
@@ -39,6 +41,7 @@ use zones::{Cdev, Sensor};
 
 const LOG_TAG: &str = "thermal_hal";
 const SOC_ID: &str = "/sys/devices/soc0/soc_id";
+const HW_PLATFORM: &str = "/sys/devices/soc0/hw_platform";
 /// The userspace trip point the HAL programs on each zone it watches.
 const USER_TRIP: i32 = 1;
 
@@ -52,6 +55,48 @@ fn illegal_argument(message: &str) -> Status {
 
 fn soc_id() -> Option<i32> {
     (0..3).find_map(|_| fs::read_to_string(SOC_ID).ok()?.trim().parse().ok())
+}
+
+/// The QTI tables of this SoC, or none.
+fn table_configs() -> Vec<SensorConfig> {
+    let Some(soc) = soc_id() else {
+        error!("soc ID fetch error");
+        return vec![];
+    };
+    let hw_platform =
+        fs::read_to_string(HW_PLATFORM).map(|s| s.trim().to_owned()).unwrap_or_default();
+    let profile = if config::has_limit_profiles(soc) { zones::limit_profile() } else { 0 };
+    let configs = config::for_soc(soc, &hw_platform, profile);
+    if configs.is_empty() {
+        error!("No config for soc ID: {soc}");
+    }
+    info!("soc {soc} ({hw_platform}), limits profile {profile}, {} sensor configs", configs.len());
+    configs
+}
+
+/// See config.rs: the device config file, else the QTI tables, else the zones found in sysfs.
+fn load_configs() -> Vec<SensorConfig> {
+    let table = table_configs();
+    for path in config::DEVICE_CONFIGS {
+        let Ok(text) = fs::read_to_string(path) else { continue };
+        match config::parse_device_config(&text) {
+            Ok((inherit, sensors)) => {
+                let mode = if inherit { "over the table" } else { "replacing the table" };
+                info!("{path}: {} sensors, {mode}", sensors.len());
+                return if inherit { config::merge(table, sensors) } else { sensors };
+            }
+            Err(e) => {
+                error!("Ignoring {path}: {e}");
+                break;
+            }
+        }
+    }
+    if !table.is_empty() {
+        return table;
+    }
+    let found = config::discover(&zones::zone_types(), zones::critical_trip);
+    warn!("No thermal config for this SoC, reporting {} zones found in sysfs", found.len());
+    found
 }
 
 #[derive(Default)]
@@ -343,21 +388,7 @@ fn main() {
 
     binder::ProcessState::set_thread_pool_max_thread_count(0);
 
-    let configs = match soc_id() {
-        Some(soc) => {
-            let profile = if config::has_limit_profiles(soc) { zones::limit_profile() } else { 0 };
-            let configs = config::for_soc(soc, profile);
-            if configs.is_empty() {
-                error!("No config for soc ID: {soc}");
-            }
-            info!("soc {soc}, limits profile {profile}, {} sensor configs", configs.len());
-            configs
-        }
-        None => {
-            error!("soc ID fetch error");
-            vec![]
-        }
-    };
+    let configs = load_configs();
     // Everything is discovered before the listener starts, so no event sees a half built state.
     let state = State { sensors: zones::discover(&configs, None), cdevs: zones::discover_cdevs() };
     info!("Monitoring {} thermal zones", state.sensors.len());
