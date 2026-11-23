@@ -53,7 +53,8 @@ impl Thresholds {
         let next = (current + 1..LEVELS).find(|&l| !self.hot[l].is_nan()).map(|l| to_zone(self.hot[l]));
         let hysteresis = to_zone(self.hysteresis);
         if current == 0 || self.hot[current].is_nan() {
-            return next.map(|trip| (trip, None));
+            // Reset the hysteresis left by a higher level.
+            return next.map(|trip| (trip, Some(hysteresis)));
         }
         let at = to_zone(self.hot[current]);
         Some(match next {
@@ -114,7 +115,7 @@ mod tests {
     #[test]
     fn trip_plans() {
         let t = skin();
-        assert_eq!(t.trip(0, 1000), Some((48000, None)));
+        assert_eq!(t.trip(0, 1000), Some((48000, Some(2000))));
         // Next level 49 C, back down below 48 - 2 C.
         assert_eq!(t.trip(1, 1000), Some((49000, Some(3000))));
         // Top level: the trip stays at 90 C and fires again below 88 C.

@@ -37,6 +37,8 @@ use nlmsg::Event;
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use zones::{Cdev, Sensor};
 
 const LOG_TAG: &str = "thermal_hal";
@@ -44,6 +46,10 @@ const SOC_ID: &str = "/sys/devices/soc0/soc_id";
 const HW_PLATFORM: &str = "/sys/devices/soc0/hw_platform";
 /// The userspace trip point the HAL programs on each zone it watches.
 const USER_TRIP: i32 = 1;
+/// How often a sensor above NONE is read. The kernel reports a trip down only after the zone was
+/// above the trip temperature, and the trip sits at the next level up, so a drop back is seen
+/// by reading the zone instead.
+const ELEVATED_POLL: Duration = Duration::from_secs(2);
 
 fn illegal_state(message: &str) -> Status {
     Status::new_exception_str(ExceptionCode::ILLEGAL_STATE, Some(message))
@@ -183,6 +189,22 @@ impl Hal {
                 .inspect_err(|e| error!("Cooling device callback failed, removing it: {e}"))
                 .is_ok()
         });
+    }
+
+    /// Reads the sensors above NONE, so drops back below a threshold are reported.
+    fn poll_elevated(&self) {
+        let mut state = self.state.lock().unwrap();
+        let mut changed = Vec::new();
+        for sensor in state.sensors.values_mut() {
+            if sensor.temperature.throttlingStatus == ThrottlingSeverity::NONE {
+                continue;
+            }
+            if sensor.read() && sensor.update_severity() {
+                changed.push(sensor.snapshot());
+            }
+        }
+        drop(state);
+        self.notify_throttling(&changed);
     }
 
     fn handle(&self, event: Event) {
@@ -396,6 +418,15 @@ fn main() {
 
     let listener = hal.clone();
     netlink::start(move |event| listener.handle(event));
+
+    let poller = hal.clone();
+    thread::Builder::new()
+        .name("thermal-poll".to_owned())
+        .spawn(move || loop {
+            thread::sleep(ELEVATED_POLL);
+            poller.poll_elevated();
+        })
+        .expect("Failed to start the thermal poll thread");
 
     let service = BnThermal::new_binder(Thermal(hal), BinderFeatures::default());
     let instance = format!("{}/default", <Thermal as IThermal>::get_descriptor());
